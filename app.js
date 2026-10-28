@@ -347,6 +347,9 @@ let measureImage = null;
 let measureAnnotations = [];
 let measureTool = 'line';
 let measureDragStart = null;
+let measureDraftLine = null;
+let measureDraftReady = false;
+let measureActiveHandle = null;
 let measureCurrentOrderId = '';
 let measurePredictionId = '';
 let measureResultPath = '';
@@ -377,7 +380,7 @@ function handleMeasurePhoto(event){
       const max=2400,scale=Math.min(1,max/Math.max(img.naturalWidth||img.width,img.naturalHeight||img.height));
       const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round((img.naturalWidth||img.width)*scale));canvas.height=Math.max(1,Math.round((img.naturalHeight||img.height)*scale));
       const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Bildbearbeitung ist auf diesem Gerät nicht verfügbar.');ctx.drawImage(img,0,0,canvas.width,canvas.height);
-      measureSourceDataUrl=canvas.toDataURL('image/jpeg',0.88);measureSourceName=file.name||'Dachfoto';measurePredictionId='';measureResultPath='';measureSourcePath='';measureAnnotations=[];loadMeasureImage(measureSourceDataUrl);
+      measureSourceDataUrl=canvas.toDataURL('image/jpeg',0.88);measureSourceName=file.name||'Dachfoto';measurePredictionId='';measureResultPath='';measureSourcePath='';measureAnnotations=[];measureDraftLine=null;measureDraftReady=false;loadMeasureImage(measureSourceDataUrl);
       const info=$('measurePhotoInfo');if(info)info.textContent=measureSourceName+' · '+Math.round(file.size/1024)+' KB · für die Bearbeitung optimiert';
       measureStatus('Foto geladen. Du kannst jetzt die KI-Zeichnung erstellen oder das Originalfoto für ein manuelles Aufmaß verwenden.');
     }catch(err){measureStatus('Das Bildformat konnte nicht verarbeitet werden. Bitte das Foto auf dem iPhone als JPEG teilen/speichern und erneut wählen. ('+(err.message||'Unbekannter Fehler')+')','error')}
@@ -389,32 +392,53 @@ function handleMeasurePhoto(event){
 function loadMeasureImage(src){
   if(!src)return;const img=new Image();img.onload=()=>{measureImage=img;const c=$('measureCanvas');if(!c)return;c.width=img.naturalWidth||img.width;c.height=img.naturalHeight||img.height;$('measureCanvasWrap').hidden=false;$('measureCanvasEmpty').hidden=true;drawMeasureCanvas();};img.onerror=()=>measureStatus('Das Bild konnte nicht geladen werden.','error');img.src=src;
 }
-function useOriginalForMeasure(){if(!measureSourceDataUrl){measureStatus('Bitte zuerst ein Dachfoto auswählen.','error');return}measureAnnotations=[];loadMeasureImage(measureSourceDataUrl);measureStatus('Das Originalfoto ist für das manuelle Aufmaß geladen. Trage Maße selbst ein; aus einem einzelnen Foto lassen sich keine zuverlässigen echten Abmessungen berechnen.');}
+function useOriginalForMeasure(){if(!measureSourceDataUrl){measureStatus('Bitte zuerst ein Dachfoto auswählen.','error');return}measureAnnotations=[];measureDraftLine=null;measureDraftReady=false;loadMeasureImage(measureSourceDataUrl);measureStatus('Das Originalfoto ist für das manuelle Aufmaß geladen. Trage Maße selbst ein; aus einem einzelnen Foto lassen sich keine zuverlässigen echten Abmessungen berechnen.');}
 function setMeasureTool(tool){measureTool=tool;const line=$('measureLineTool'),label=$('measureLabelTool');if(line)line.classList.toggle('primary',tool==='line');if(label)label.classList.toggle('primary',tool==='label');}
+function drawMeasureLine(ctx,a,width,showHandles=false){
+  ctx.strokeStyle='#e53935';ctx.fillStyle='#e53935';ctx.lineWidth=Math.max(3,width/500);ctx.beginPath();ctx.moveTo(a.x1,a.y1);ctx.lineTo(a.x2,a.y2);ctx.stroke();
+  const angle=Math.atan2(a.y2-a.y1,a.x2-a.x1),head=Math.max(10,width/90);[[a.x1,a.y1,angle+Math.PI],[a.x2,a.y2,angle]].forEach(([x,y,ang])=>{ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-head*Math.cos(ang-.45),y-head*Math.sin(ang-.45));ctx.lineTo(x-head*Math.cos(ang+.45),y-head*Math.sin(ang+.45));ctx.closePath();ctx.fill()});
+  if(a.text)drawMeasureText(ctx,a.text,(a.x1+a.x2)/2,(a.y1+a.y2)/2,width);
+  if(showHandles){const r=Math.max(11,width/65);[[a.x1,a.y1],[a.x2,a.y2]].forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();ctx.lineWidth=Math.max(2,width/350);ctx.strokeStyle='#1769aa';ctx.stroke()})}
+}
 function drawMeasureCanvas(){
   const c=$('measureCanvas');if(!c||!measureImage)return;const ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(measureImage,0,0,c.width,c.height);
   ctx.lineCap='round';ctx.lineJoin='round';
-  measureAnnotations.forEach(a=>{
-    if(a.type==='line'){
-      ctx.strokeStyle='#e53935';ctx.fillStyle='#e53935';ctx.lineWidth=Math.max(3,c.width/500);ctx.beginPath();ctx.moveTo(a.x1,a.y1);ctx.lineTo(a.x2,a.y2);ctx.stroke();
-      const angle=Math.atan2(a.y2-a.y1,a.x2-a.x1),head=Math.max(10,c.width/90);[ [a.x1,a.y1,angle+Math.PI],[a.x2,a.y2,angle] ].forEach(([x,y,ang])=>{ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-head*Math.cos(ang-.45),y-head*Math.sin(ang-.45));ctx.lineTo(x-head*Math.cos(ang+.45),y-head*Math.sin(ang+.45));ctx.closePath();ctx.fill()});
-      const mx=(a.x1+a.x2)/2,my=(a.y1+a.y2)/2;drawMeasureText(ctx,a.text,mx,my,c.width);
-    }else if(a.type==='label')drawMeasureText(ctx,a.text,a.x,a.y,c.width);
-  });
+  measureAnnotations.forEach(a=>{if(a.type==='line')drawMeasureLine(ctx,a,c.width,false);else if(a.type==='label')drawMeasureText(ctx,a.text,a.x,a.y,c.width)});
+  if(measureDraftLine)drawMeasureLine(ctx,measureDraftLine,c.width,true);
+  const controls=$('measureDraftControls');if(controls)controls.hidden=!(measureDraftLine&&measureDraftReady);
 }
 function drawMeasureText(ctx,text,x,y,width){const fs=Math.max(16,width/42);ctx.font='bold '+fs+'px Arial';const pad=fs*.3,w=ctx.measureText(text).width+pad*2,h=fs+pad*2;ctx.fillStyle='rgba(255,255,255,.94)';ctx.strokeStyle='#d92d2d';ctx.lineWidth=Math.max(1.5,width/900);ctx.beginPath();ctx.rect(x-w/2,y-h/2,w,h);ctx.fill();ctx.stroke();ctx.fillStyle='#b91c1c';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,x,y,maxTextWidth(width));}
 function maxTextWidth(width){return Math.max(80,width*.45)}
 function measureCanvasPoint(e){const c=$('measureCanvas'),r=c.getBoundingClientRect();return{x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)}}
 (function setupMeasureCanvas(){
-  document.addEventListener('DOMContentLoaded',()=>{
-    const c=$('measureCanvas');if(!c)return;
-    c.addEventListener('pointerdown',e=>{if(!measureImage)return;c.setPointerCapture(e.pointerId);const p=measureCanvasPoint(e);measureDragStart=p;if(measureTool==='label'){const text=($('measureLabelInput').value||'').trim()||prompt('Beschriftung eingeben:','');if(text){measureAnnotations.push({type:'label',x:p.x,y:p.y,text});drawMeasureCanvas()}measureDragStart=null;}});
-    c.addEventListener('pointerup',e=>{if(!measureDragStart||measureTool!=='line')return;const p=measureCanvasPoint(e),start=measureDragStart;measureDragStart=null;if(Math.hypot(p.x-start.x,p.y-start.y)<8)return;const text=($('measureLabelInput').value||'').trim()||prompt('Maß / Beschriftung eingeben (z. B. 8,40 m):','');if(!text)return;measureAnnotations.push({type:'line',x1:start.x,y1:start.y,x2:p.x,y2:p.y,text});drawMeasureCanvas()});
-    c.addEventListener('pointercancel',()=>{measureDragStart=null});
-  });
+  const bind=()=>{
+    const c=$('measureCanvas');if(!c||c.dataset.measureBound)return;c.dataset.measureBound='1';
+    const hitHandle=(p)=>{if(!measureDraftLine)return null;const radius=Math.max(24,c.width/35);for(const key of ['start','end']){const x=key==='start'?measureDraftLine.x1:measureDraftLine.x2,y=key==='start'?measureDraftLine.y1:measureDraftLine.y2;if(Math.hypot(p.x-x,p.y-y)<=radius)return key}return null};
+    c.addEventListener('pointerdown',e=>{
+      if(!measureImage)return;const p=measureCanvasPoint(e);c.setPointerCapture(e.pointerId);
+      if(measureDraftLine){measureActiveHandle=hitHandle(p);if(measureActiveHandle){e.preventDefault();return}return}
+      if(measureTool==='label'){const text=($('measureLabelInput').value||'').trim()||prompt('Beschriftung eingeben:','');if(text){measureAnnotations.push({type:'label',x:p.x,y:p.y,text});drawMeasureCanvas()}return}
+      measureDragStart=p;measureDraftReady=false;measureDraftLine={x1:p.x,y1:p.y,x2:p.x,y2:p.y,text:($('measureLabelInput').value||'').trim()};drawMeasureCanvas();
+    });
+    c.addEventListener('pointermove',e=>{if(!measureImage)return;const p=measureCanvasPoint(e);if(measureActiveHandle&&measureDraftLine){if(measureActiveHandle==='start'){measureDraftLine.x1=p.x;measureDraftLine.y1=p.y}else{measureDraftLine.x2=p.x;measureDraftLine.y2=p.y}drawMeasureCanvas();return}if(measureDragStart&&measureDraftLine){measureDraftLine.x2=p.x;measureDraftLine.y2=p.y;drawMeasureCanvas()}});
+    c.addEventListener('pointerup',e=>{
+      if(measureActiveHandle){measureActiveHandle=null;return}
+      if(!measureDragStart||!measureDraftLine)return;const p=measureCanvasPoint(e);measureDraftLine.x2=p.x;measureDraftLine.y2=p.y;measureDragStart=null;
+      if(Math.hypot(measureDraftLine.x2-measureDraftLine.x1,measureDraftLine.y2-measureDraftLine.y1)<8){measureDraftLine=null;measureDraftReady=false;drawMeasureCanvas();return}
+      if(!measureDraftLine.text)measureDraftLine.text=($('measureLabelInput').value||'').trim()||prompt('Maß / Beschriftung eingeben (z. B. 8,40 m):','');
+      if(!measureDraftLine.text){measureDraftLine=null;measureDraftReady=false;drawMeasureCanvas();return}
+      measureDraftReady=true;
+      const input=$('measureLabelInput');if(input)input.value=measureDraftLine.text;drawMeasureCanvas();
+      measureStatus('Maßlinie ist noch nicht festgesetzt. Ziehe die blauen Endpunkte an die richtige Stelle und tippe „Maßlinie übernehmen“.','success');
+    });
+    c.addEventListener('pointercancel',()=>{measureDragStart=null;measureActiveHandle=null});
+  };
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bind,{once:true});else bind();
 })();
-function undoMeasureAnnotation(){measureAnnotations.pop();drawMeasureCanvas()}
-function clearMeasureAnnotations(){if(!measureAnnotations.length)return;if(confirm('Alle Maßlinien und Beschriftungen entfernen?')){measureAnnotations=[];drawMeasureCanvas()}}
+function commitMeasureLine(){if(!measureDraftLine||!measureDraftReady)return;const text=($('measureLabelInput').value||measureDraftLine.text||'').trim();if(!text){measureStatus('Bitte zuerst ein Maß oder eine Beschriftung eingeben.','error');return}measureDraftLine.text=text;measureAnnotations.push({...measureDraftLine,type:'line'});measureDraftLine=null;measureDraftReady=false;drawMeasureCanvas();measureStatus('Maßlinie übernommen. Du kannst die nächste Maßlinie zeichnen.','success')}
+function cancelMeasureLine(){measureDraftLine=null;measureDraftReady=false;measureDragStart=null;measureActiveHandle=null;drawMeasureCanvas();measureStatus('Maßlinie verworfen.','')}
+function undoMeasureAnnotation(){if(measureDraftLine){measureDraftLine=null;measureDraftReady=false;drawMeasureCanvas();return}measureAnnotations.pop();drawMeasureCanvas()}
+function clearMeasureAnnotations(){if(!measureAnnotations.length&&!measureDraftLine)return;if(confirm('Alle Maßlinien und Beschriftungen entfernen?')){measureAnnotations=[];measureDraftLine=null;measureDraftReady=false;drawMeasureCanvas()}}
 function downloadMeasureDrawing(){const c=$('measureCanvas');if(!c||!measureImage){alert('Bitte zuerst ein Bild laden.');return}const a=document.createElement('a');a.href=c.toDataURL('image/png');a.download='DACHWERK-Aufmass-'+new Date().toISOString().slice(0,10)+'.png';document.body.appendChild(a);a.click();a.remove()}
 async function uploadMeasureImageForAI(){
   if(!isCloudUser())throw new Error('Bitte anmelden und auf die Benutzerfreigabe warten.');
@@ -463,7 +487,7 @@ async function generateTechnicalDrawing(){
     if(submitted.imageDataUrl||submitted.imageUrl||submitted.outputUrl||submitted.output_url){
       const resultUrl=submitted.imageDataUrl||submitted.imageUrl||submitted.outputUrl||submitted.output_url;
       const drawingData=resultUrl.startsWith('data:image/')?resultUrl:await fetchImageAsDataUrl(resultUrl);
-      measureSourceDataUrl=drawingData;measureSourceName='KI-Dachzeichnung.png';measureAnnotations=[];loadMeasureImage(drawingData);
+      measureSourceDataUrl=drawingData;measureSourceName='KI-Dachzeichnung.png';measureAnnotations=[];measureDraftLine=null;measureDraftReady=false;loadMeasureImage(drawingData);
       measureStatus('Fertige technische Zeichnung geladen. Du kannst jetzt Maße eintragen.','success');return;
     }
     if(!measurePredictionId)throw new Error('WaveSpeedAI hat keine Auftrags-ID zurückgegeben.');
@@ -482,7 +506,7 @@ async function generateTechnicalDrawing(){
       if(statusData.status==='completed'&&(statusData.imageDataUrl||statusData.imageUrl||statusData.outputUrl||statusData.output_url)){
         const resultUrl=statusData.imageDataUrl||statusData.imageUrl||statusData.outputUrl||statusData.output_url;
         const drawingData=resultUrl.startsWith('data:image/')?resultUrl:await fetchImageAsDataUrl(resultUrl);
-        measureSourceDataUrl=drawingData;measureSourceName='KI-Dachzeichnung.png';measureAnnotations=[];loadMeasureImage(drawingData);
+        measureSourceDataUrl=drawingData;measureSourceName='KI-Dachzeichnung.png';measureAnnotations=[];measureDraftLine=null;measureDraftReady=false;loadMeasureImage(drawingData);
         measureStatus('Fertige technische Zeichnung geladen. Du kannst jetzt Maße eintragen.','success');return;
       }
       if(['failed','cancelled','timeout','deleted'].includes(statusData.status))throw new Error(statusData.error||('WaveSpeedAI-Status: '+statusData.status));
