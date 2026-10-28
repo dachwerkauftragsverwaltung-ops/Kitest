@@ -423,6 +423,30 @@ async function uploadMeasureImageForAI(){
   const {data,error:signedError}=await client.storage.from('dachwerk-photos').createSignedUrl(path,3600);if(signedError)throw signedError;if(!data?.signedUrl)throw new Error('Für das hochgeladene Foto konnte keine sichere URL erstellt werden.');
   measureResultPath=path;measureSourcePath=path;return data.signedUrl;
 }
+async function explainEdgeFunctionError(error, stage){
+  let detail='';
+  try {
+    const context=error?.context;
+    if(context && typeof context.clone==='function'){
+      const response=context.clone();
+      const contentType=response.headers?.get?.('content-type')||'';
+      if(contentType.includes('application/json')){
+        const body=await response.json();
+        detail=body?.error||body?.message||body?.msg||body?.details||'';
+        if(!detail && body && typeof body==='object') detail=JSON.stringify(body);
+      }else{
+        detail=(await response.text()).slice(0,500);
+      }
+      if(!detail && response.status) detail='HTTP '+response.status;
+    }else if(context && typeof context.json==='function'){
+      const body=await context.json();
+      detail=body?.error||body?.message||JSON.stringify(body);
+    }
+  }catch(readError){ /* Use the original message if the response body is unavailable. */ }
+  const base=error?.message||'Unbekannter Fehler';
+  return new Error(stage+': '+(detail||base)+((detail && base && !base.includes(detail))?' ('+base+')':''));
+}
+
 async function generateTechnicalDrawing(){
   if(!measureSourceDataUrl){measureStatus('Bitte zuerst ein Dachfoto aufnehmen oder hochladen.','error');return}
   if(!isCloudUser()){measureStatus('Für die KI-Zeichnung musst du angemeldet und freigeschaltet sein.','error');return}
@@ -433,7 +457,7 @@ async function generateTechnicalDrawing(){
     btn.textContent='KI-Zeichnung wird erstellt …';
     const prompt=$('measurePrompt').value.trim();
     const {data:submitted,error:submitError}=await sb().functions.invoke('dachwerk-technical-drawing',{body:{action:'submit',imageUrl,prompt}});
-    if(submitError)throw new Error(submitError.message||'Die Edge Function konnte nicht aufgerufen werden.');
+    if(submitError)throw await explainEdgeFunctionError(submitError,'Supabase/WaveSpeedAI beim Start');
     if(!submitted?.success)throw new Error(submitted?.error||'WaveSpeedAI hat die Anfrage abgelehnt.');
     measurePredictionId=submitted.predictionId||'';
     if(submitted.imageDataUrl||submitted.imageUrl||submitted.outputUrl||submitted.output_url){
@@ -450,7 +474,7 @@ async function generateTechnicalDrawing(){
       btn.textContent='Zeichnung wird verarbeitet … '+Math.min(99,Math.round((attempt+1)/maxAttempts*100))+'%';
       measureStatus('Die KI erstellt deine technische Zeichnung. Bitte die Seite geöffnet lassen …');
       const {data:statusData,error:statusError}=await sb().functions.invoke('dachwerk-technical-drawing',{body:{action:'result',predictionId:measurePredictionId}});
-      if(statusError)throw new Error(statusError.message||'Der Bearbeitungsstatus konnte nicht abgefragt werden.');
+      if(statusError)throw await explainEdgeFunctionError(statusError,'Supabase/WaveSpeedAI bei der Ergebnisabfrage');
       if(!statusData?.success){
         if(statusData?.status==='failed'||statusData?.status==='cancelled'||statusData?.status==='timeout'||statusData?.status==='deleted')throw new Error(statusData.error||('Die Bildgenerierung endete mit Status '+statusData.status+'.'));
         throw new Error(statusData?.error||'Die Ergebnisabfrage ist fehlgeschlagen.');
@@ -464,7 +488,7 @@ async function generateTechnicalDrawing(){
       if(['failed','cancelled','timeout','deleted'].includes(statusData.status))throw new Error(statusData.error||('WaveSpeedAI-Status: '+statusData.status));
     }
     throw new Error('Die Zeichnung ist noch nicht fertig. Bitte später erneut versuchen; die Auftrags-ID lautet '+measurePredictionId+'.');
-  }catch(e){console.error('DACHWERK technical drawing:',e);measureStatus('Fehler: '+(e?.message||'Unbekannter Fehler')+'. Prüfe die Supabase-Edge-Function und den WaveSpeedAI-Endpunkt.','error')}
+  }catch(e){console.error('DACHWERK technical drawing:',e);measureStatus('Fehler: '+(e?.message||'Unbekannter Fehler')+'. Öffne in Supabase Edge Functions → dachwerk-technical-drawing → Logs, falls die Meldung keine Ursache nennt.','error')}
   finally{btn.disabled=false;btn.textContent='KI-Zeichnung erstellen'}
 }
 async function fetchImageAsDataUrl(url){const r=await fetch(url);if(!r.ok)throw new Error('Das erzeugte Bild konnte nicht abgerufen werden.');const blob=await r.blob();return await new Promise((resolve,reject)=>{const rd=new FileReader();rd.onload=()=>resolve(String(rd.result));rd.onerror=reject;rd.readAsDataURL(blob)})}
